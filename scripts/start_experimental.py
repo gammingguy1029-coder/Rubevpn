@@ -11,6 +11,7 @@ This is an experimental proof of concept, not a production VPN.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -151,13 +152,25 @@ def udp_port_available(port: int) -> bool:
         sock.close()
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def ensure_binary(name: str) -> Path:
     target = CFG / name
-    if target.exists():
-        return target
     source = TOOLS / name
     if source.exists():
+        # A previous install may hold an older binary. Refresh it whenever the
+        # bundled version changes, otherwise new peers/features are missing.
+        if target.exists() and _sha256(target) == _sha256(source):
+            return target
         shutil.copy2(source, target)
+        return target
+    if target.exists():
         return target
     fail(
         "MISSING_DEPENDENCY",
@@ -304,6 +317,21 @@ def write_android_profile(server: dict[str, str], client: dict[str, str], endpoi
     return content
 
 
+def write_state(server_pid: int, tunnel_pid: int, endpoint: str = "",
+                tunnel_id: str | None = None) -> None:
+    """Persist PIDs immediately so a partially started stack can be cleaned up."""
+    STATE.write_text(json.dumps({
+        "processes": [
+            {"pid": server_pid, "name": "server.exe"},
+            {"pid": tunnel_pid, "name": "cmd.exe"},
+        ],
+        "pids": [server_pid, tunnel_pid],
+        "tunnel_id": tunnel_id,
+        "endpoint": endpoint,
+        "updated_at": _now(),
+    }, indent=2), encoding="utf-8")
+
+
 def print_online(endpoint: str, server_pid: int, tunnel_pid: int, reply_bytes: int | None) -> None:
     state = "ONLINE" if reply_bytes is not None else "DEGRADED"
     handshake = f"verified (reply_bytes={reply_bytes})" if reply_bytes is not None else "SKIPPED"
@@ -342,6 +370,9 @@ def main() -> int:
         print("[OK] Stopped RubeVPN server and tunnel.")
         return 0
 
+    # Clean up a previous or partially started stack before checking ports.
+    stop_existing()
+
     print("[..] Checking prerequisites")
     if not udp_port_available(LISTEN_PORT):
         fail("PORT_CONFLICT", f"UDP port {LISTEN_PORT} is already in use.",
@@ -355,7 +386,6 @@ def main() -> int:
     print(f"[OK] Config directory: {CFG}")
     print("[OK] Reusing existing keys." if configured else "[OK] First run: generating keys.")
 
-    stop_existing()
     server_exe = ensure_binary("server.exe")
     keygen = ensure_binary("keygen.exe")
     server_keys, client_keys, verify_keys = ensure_keys(keygen)
@@ -369,6 +399,7 @@ def main() -> int:
     print(f"[OK] WireGuard server listening on UDP {LISTEN_PORT} (pid {server_pid})")
 
     tunnel_pid = start_tunnel()
+    write_state(server_pid, tunnel_pid)
     endpoint = wait_for_endpoint(tunnel_pid)
     print(f"[OK] Public UDP endpoint: udp://{endpoint}")
 
@@ -389,16 +420,8 @@ def main() -> int:
 
     tunnel_text = (CFG / "tunnel.log").read_text(encoding="utf-8", errors="ignore")
     tunnel_match = TUNNEL_ID_RE.search(tunnel_text)
-    STATE.write_text(json.dumps({
-        "processes": [
-            {"pid": server_pid, "name": "server.exe"},
-            {"pid": tunnel_pid, "name": "cmd.exe"},
-        ],
-        "pids": [server_pid, tunnel_pid],
-        "tunnel_id": tunnel_match.group(1) if tunnel_match else None,
-        "endpoint": endpoint,
-        "updated_at": _now(),
-    }, indent=2), encoding="utf-8")
+    write_state(server_pid, tunnel_pid, endpoint,
+                tunnel_match.group(1) if tunnel_match else None)
 
     print_online(endpoint, server_pid, tunnel_pid, reply_bytes)
     return 0 if reply_bytes is not None else 2

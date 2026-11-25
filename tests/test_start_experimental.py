@@ -55,6 +55,22 @@ def test_write_server_env_includes_verification_peer(tmp_path: Path, monkeypatch
     assert "RUBEVPN_WG_LISTEN_PORT=51820" in content
 
 
+def test_ensure_binary_refreshes_outdated_copy(tmp_path: Path, monkeypatch) -> None:
+    tools = tmp_path / "tools"
+    cfg = tmp_path / "cfg"
+    tools.mkdir()
+    cfg.mkdir()
+    source = tools / "server.exe"
+    source.write_bytes(b"new-binary")
+    stale = cfg / "server.exe"
+    stale.write_bytes(b"old-binary")
+    monkeypatch.setattr(starter, "TOOLS", tools)
+    monkeypatch.setattr(starter, "CFG", cfg)
+    result = starter.ensure_binary("server.exe")
+    assert result.read_bytes() == b"new-binary"
+    assert starter.ensure_binary("server.exe").read_bytes() == b"new-binary"
+
+
 def test_online_banner(capsys) -> None:
     starter.print_online("1.2.3.4:51820", 111, 222, 89)
     output = capsys.readouterr().out
