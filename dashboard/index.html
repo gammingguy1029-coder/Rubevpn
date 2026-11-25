@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>RubeVPN — Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="login-screen" class="login-screen hidden">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <h1>RubeVPN</h1>
+      <p class="muted">Administrative access</p>
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="error-text" role="alert"></p>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <main id="dashboard" class="container hidden">
+    <header class="topbar">
+      <div>
+        <h1>RubeVPN</h1>
+        <p class="muted">Personal VPN management</p>
+      </div>
+      <div class="topbar-actions">
+        <span class="version" id="app-version">v—</span>
+        <button id="refresh-btn" type="button" class="ghost">Refresh</button>
+        <button id="logout-btn" type="button" class="ghost">Sign out</button>
+      </div>
+    </header>
+
+    <div id="error-banner" class="banner hidden" role="alert"></div>
+
+    <section class="cards" aria-label="Session overview">
+      <article class="card">
+        <h2>VPN server</h2>
+        <p id="vpn-status" class="status">Loading…</p>
+      </article>
+      <article class="card">
+        <h2>Current session</h2>
+        <p id="session-status" class="status">Loading…</p>
+      </article>
+      <article class="card">
+        <h2>Session uptime</h2>
+        <p id="uptime">Loading…</p>
+      </article>
+      <article class="card">
+        <h2>Session expiration</h2>
+        <p id="expiry">Loading…</p>
+      </article>
+      <article class="card">
+        <h2>Connected clients</h2>
+        <p id="clients">Loading…</p>
+      </article>
+      <article class="card">
+        <h2>Last health check</h2>
+        <p id="last-check">Loading…</p>
+      </article>
+      <article class="card">
+        <h2>Network diagnostics</h2>
+        <p id="diag-summary">Loading…</p>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Diagnostic checks</h2>
+      <ul id="diagnostics" class="list"><li class="muted">Loading…</li></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Structured event log</h2>
+      <ul id="events" class="list"><li class="muted">Loading…</li></ul>
+    </section>
+  </main>
+</body>
+</html>

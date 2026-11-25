@@ -1,0 +1,23 @@
+{
+  "app_version": "1.0.0-m1",
+  "environment": "development",
+  "vpn": {
+    "provider": "unavailable",
+    "endpoint_host": null,
+    "endpoint_port": 51820,
+    "allowed_ipv4": ["0.0.0.0/0"],
+    "dns": ["1.1.1.1"],
+    "session_duration_minutes": 60,
+    "interface_name": "RubeVPN",
+    "subnet_cidr": "10.7.0.0/24"
+  },
+  "dashboard": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "refresh_seconds": 5
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json"
+  }
+}

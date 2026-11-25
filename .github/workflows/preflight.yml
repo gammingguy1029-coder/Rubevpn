@@ -1,0 +1,35 @@
+name: preflight
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime dependencies
+        run: python -m pip install --upgrade pip -r backend/requirements.txt
+
+      - name: Run non-destructive preflight
+        shell: pwsh
+        run: python scripts/preflight.py --json --save
+
+      - name: Upload scrubbed preflight report
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-report
+          path: logs/preflight-results.json
+          if-no-files-found: warn

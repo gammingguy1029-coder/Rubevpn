@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip -r backend/requirements.txt
+
+      - name: Run unit and API tests
+        shell: pwsh
+        env:
+          RUBEVPN_ADMIN_PASSWORD_HASH: ${{ secrets.RUBEVPN_TEST_PASSWORD_HASH }}
+          RUBEVPN_SESSION_SECRET: ${{ secrets.RUBEVPN_TEST_SESSION_SECRET }}
+          RUBEVPN_COOKIE_SECURE: 'false'
+        run: |
+          if ([string]::IsNullOrEmpty($env:RUBEVPN_ADMIN_PASSWORD_HASH)) {
+            $env:RUBEVPN_ADMIN_PASSWORD_HASH = python -c "from backend.app.security.auth import hash_password; print(hash_password('ci-test-password'))"
+          }
+          if ([string]::IsNullOrEmpty($env:RUBEVPN_SESSION_SECRET)) {
+            $env:RUBEVPN_SESSION_SECRET = python -c "import secrets; print(secrets.token_urlsafe(48))"
+          }
+          python -m pytest -q
+
+      - name: Report preflight limitations
+        shell: pwsh
+        run: |
+          $report = python scripts/preflight.py --json --offline | ConvertFrom-Json
+          Write-Host "Preflight ready=$($report.ready); blocking=$($report.blocking -join ', ')"

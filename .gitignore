@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+
+# Secrets and local config (never commit credentials)
+config/settings.json
+.env
+*.key
+*.pem
+*.pfx
+
+# Runtime data
+logs/*
+!logs/.gitkeep
+*.log
+
+# Editor/tool backups
+*.exe~
+*~
+
+# Bundled experimental binaries are intentionally tracked so that
+# start.bat works immediately after cloning. Do not add *.exe here.
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+# Runtime
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pydantic>=2.10,<3
+
+# Test tooling (installed in CI as well)
+pytest>=8.3,<9
+httpx>=0.28,<1
