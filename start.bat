@@ -35,12 +35,6 @@ if not exist "tools\userspace_wg\server.exe" (
     exit /b 1
 )
 
-echo Checking QR-code dependencies...
-python -m pip install --quiet qrcode pillow
-if errorlevel 1 (
-    echo [WARN] QR dependencies could not be installed; phone.conf will still be generated.
-)
-
 echo.
 echo Starting RubeVPN experimental WireGuard + UDP tunnel...
 python scripts\start_experimental.py

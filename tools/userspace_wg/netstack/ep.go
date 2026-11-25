@@ -70,4 +70,3 @@ func (*endpoint) ARPHardwareType() header.ARPHardwareType {
 
 // func (e *endpoint) AddHeader(tcpip.LinkAddress, tcpip.LinkAddress, tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {}
 func (e *endpoint) AddHeader(*stack.PacketBuffer) {}
-

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"time"
 
@@ -23,12 +24,12 @@ type memTun struct {
 	fromDevice chan []byte
 }
 
-func (m *memTun) Name() (string, error)      { return "rubepeer", nil }
-func (m *memTun) File() *os.File             { return nil }
-func (m *memTun) Events() chan tun.Event     { return m.events }
-func (m *memTun) MTU() (int, error)          { return 1420, nil }
-func (m *memTun) Flush() error               { return nil }
-func (m *memTun) Close() error               { return nil }
+func (m *memTun) Name() (string, error)  { return "rubepeer", nil }
+func (m *memTun) File() *os.File         { return nil }
+func (m *memTun) Events() chan tun.Event { return m.events }
+func (m *memTun) MTU() (int, error)      { return 1420, nil }
+func (m *memTun) Flush() error           { return nil }
+func (m *memTun) Close() error           { return nil }
 func (m *memTun) Write(buf []byte, offset int) (int, error) {
 	packet := append([]byte(nil), buf[offset:]...)
 	select {
@@ -50,22 +51,22 @@ func key(name, value string) string {
 	return hex.EncodeToString(raw)
 }
 
-func dnsQuery() []byte {
+func dnsQuery(sourceIP net.IP) []byte {
 	question := layers.DNSQuestion{
 		Name:  []byte("example.com"),
 		Type:  layers.DNSTypeA,
 		Class: layers.DNSClassIN,
 	}
 	dns := &layers.DNS{
-		ID:       0x1234,
-		RD:       true,
+		ID:        0x1234,
+		RD:        true,
 		Questions: []layers.DNSQuestion{question},
 	}
 	ip := &layers.IPv4{
 		Version:  4,
 		TTL:      64,
 		Protocol: layers.IPProtocolUDP,
-		SrcIP:    []byte{10, 0, 0, 2},
+		SrcIP:    sourceIP,
 		DstIP:    []byte{1, 1, 1, 1},
 	}
 	udp := &layers.UDP{SrcPort: 50000, DstPort: 53}
@@ -104,9 +105,14 @@ func main() {
 	}
 	dev.Up()
 
+	sourceIP := net.ParseIP(os.Getenv("RUBEVPN_WG_LOCAL_ADDRESS"))
+	if sourceIP == nil {
+		sourceIP = net.ParseIP("10.0.0.2")
+	}
+
 	// Allow time for the handshake to complete through the relay.
 	time.Sleep(2 * time.Second)
-	m.toDevice <- dnsQuery()
+	m.toDevice <- dnsQuery(sourceIP)
 
 	deadline := time.After(12 * time.Second)
 	for {

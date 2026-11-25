@@ -21,9 +21,9 @@ diagnostics, and a modular WireGuard provider interface.
 | Secret redaction in logs | Implemented |
 | Network diagnostics and preflight scripts | Implemented |
 | Windows WireGuard provider + setup scripts | Implemented, unit tested locally |
-| Config/API/log/Windows tests | 38 passing locally |
+| Config/API/log/Windows/startup tests | 44 passing locally |
 | Experimental userspace WireGuard + UDP tunnel | Handshake verified via `peercheck` (`VERIFY_OK`) |
-| One-click `start.bat` / `stop.bat` | Implemented; QR opens automatically |
+| One-click `start.bat` / `stop.bat` | Implemented; verified handshake gate, clear ONLINE banner, QR auto-opens |
 | CI workflows on GitHub | Not yet verified (no remote push performed) |
 | Native WireGuard on an eligible public host | Code ready, not verified on real infrastructure |
 | DNS / IPv6 leak prevention verification | Not implemented |

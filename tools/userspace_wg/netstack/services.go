@@ -1,14 +1,13 @@
 package netstack
 
 import (
-	"log"
 	"net"
 
-	"rubevpn/userspace_wg/services/dns"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"rubevpn/userspace_wg/services/dns"
 )
 
 // services
@@ -24,7 +23,7 @@ func dnsServer(s *stack.Stack) error {
 
 	go func() {
 		if err := dns.Serve(udpConn); err != nil {
-			log.Println(err)
+			debugf("dns serve error: %v", err)
 		}
 	}()
 	return nil

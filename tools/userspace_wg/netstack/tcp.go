@@ -2,8 +2,6 @@ package netstack
 
 import (
 	"fmt"
-	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -15,56 +13,72 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
-const tcpWaitTimeout = 50 * time.Second
+// Idle timeout for relay connections. The deadline is refreshed on every
+// successful read, so active connections are never cut off.
+const tcpWaitTimeout = 5 * time.Minute
 
 func (tun *NetTun) acceptTCP(req *tcp.ForwarderRequest) {
 	if isPrivateIP(net.IP(req.ID().LocalAddress)) {
-		log.Printf("Access to private IPv4 subnet is restricted: %s", req.ID().LocalAddress.String())
-		return
-	}
-	
-	localAddress := req.ID().LocalAddress
-	log.Printf("TCP> %s: %d", localAddress, req.ID().LocalPort)
-
-	outbound, err := net.Dial("tcp", fmt.Sprintf("%s:%d", localAddress, req.ID().LocalPort))
-	if err != nil {
-		log.Printf("net.Dial() = %v", err)
+		debugf("Access to private IPv4 subnet is restricted: %s", req.ID().LocalAddress.String())
 		req.Complete(true)
 		return
 	}
+	if !acquireRelay() {
+		debugf("relay limit reached, refusing TCP flow")
+		req.Complete(true)
+		return
+	}
+	defer releaseRelay()
+
+	localAddress := req.ID().LocalAddress
+	debugf("TCP> %s: %d", localAddress, req.ID().LocalPort)
+
+	outbound, err := net.Dial("tcp", fmt.Sprintf("%s:%d", localAddress, req.ID().LocalPort))
+	if err != nil {
+		debugf("net.Dial() = %v", err)
+		req.Complete(true)
+		return
+	}
+	defer outbound.Close()
 
 	var wq waiter.Queue
 	ep, tcpErr := req.CreateEndpoint(&wq)
 	if tcpErr != nil {
-		log.Printf("req.CreateEndpoint() = %v", tcpErr)
+		debugf("req.CreateEndpoint() = %v", tcpErr)
 		req.Complete(false)
 		return
 	}
 	conn := gonet.NewTCPConn(&wq, ep)
+	defer conn.Close()
 
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-
-	go tun.cpy(&wg, outbound, conn, 1) // conn -> outbound
-	go tun.cpy(&wg, conn, outbound, 2) // outbound -> conn
+	go tun.cpy(&wg, outbound, conn, 1) // tunnel -> host
+	go tun.cpy(&wg, conn, outbound, 2) // host -> tunnel
 	wg.Wait()
 }
 
-func (tun *NetTun) cpy(wg *sync.WaitGroup, dst, src net.Conn, i int) {
+func (tun *NetTun) cpy(wg *sync.WaitGroup, dst, src net.Conn, _ int) {
 	defer wg.Done()
 
-	//buf := pool.Get(pool.RelayBufferSize)
-	//io.CopyBuffer(dst, src, buf)
-	//pool.Put(buf)
-
-	r := shaper.NewReader(src, tun.limiter)
-	_, err := io.Copy(dst, r)
-	if err != nil {
-		log.Printf("copy %v", err)
+	limited := shaper.NewReader(src, tun.limiter)
+	buf := make([]byte, 32*1024)
+	for {
+		// Reset the idle deadline before each read instead of setting it after
+		// the copy has already finished (which did nothing).
+		_ = src.SetReadDeadline(time.Now().Add(tcpWaitTimeout))
+		n, err := limited.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				debugf("relay write error: %v", writeErr)
+				return
+			}
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+				debugf("relay read error: %v", err)
+			}
+			return
+		}
 	}
-
-	// Set a deadline for the ReadOperation so that we don't
-	// wait forever for a dst that might not respond on
-	// a resonable amount of time.
-	dst.SetReadDeadline(time.Now().Add(tcpWaitTimeout))
 }

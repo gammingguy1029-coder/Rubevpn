@@ -15,7 +15,7 @@
 | Capability | State | Evidence |
 |---|---|---|
 | Repository structure, CI workflows | Implemented | Files present; workflows not yet run on GitHub |
-| Python 3.12 backend, config validation, structured logs | Implemented | `backend/app/*`, 38 passing tests |
+| Python 3.12 backend, config validation, structured logs | Implemented | `backend/app/*`, 44 passing tests |
 | Authenticated dashboard with real backend data | Implemented | API tests + live smoke test (`/`, `/health`, 401 on status) |
 | API authentication / invalid credentials rejected | Implemented | `tests/test_api.py` |
 | Secret redaction in logs | Implemented | `tests/test_logging.py` |
@@ -190,15 +190,43 @@ Because the runner has no admin rights or public endpoint, `tools/userspace_wg/`
 
 ### `start.bat`
 
-1. Verifies Python and Node.js/npm are present.
-2. Runs `scripts/start_experimental.py`.
-3. On first run: copies bundled binaries into `%LOCALAPPDATA%\RubeVPN\wg`, generates keys, writes `server.env`, starts server and tunnel.
-4. On later runs: reuses existing keys, stops only its own processes, restarts server and tunnel, refreshes the endpoint.
-5. Writes `phone.conf` and `phone-qr.png`, installs `qrcode`/`pillow` if needed, and **opens the QR automatically**.
+1. Verifies Python 3.12+, Node.js/npm, and bundled binaries are present.
+2. Checks UDP 51820 is free; refuses to start on a port conflict (`PORT_CONFLICT`).
+3. Runs `scripts/start_experimental.py`.
+4. On first run: generates **server, client and verification** keypairs, writes `server.env`, starts server and tunnel.
+5. On later runs: reuses existing keys, stops only its own processes (with PID identity checks), restarts server and tunnel, refreshes the endpoint.
+6. Verifies a real encrypted handshake through the public endpoint using the **separate verification peer** (`10.0.0.3`), so the phone session is not disturbed.
+7. Writes `phone.conf` and `phone-qr.png`, installs `qrcode`/`pillow` if needed, and **opens the QR automatically**.
+8. Prints a clear status block:
+
+```text
+================================================
+ RUBEVPN SERVICE ONLINE
+================================================
+ Endpoint : udp://194.213.18.243:34089
+ Server   : pid 4496, UDP 51820
+ Tunnel   : pid 7824
+ Handshake: verified (reply_bytes=89)
+ Profile  : ...\phone.conf
+ QR       : ...\phone-qr.png (opened automatically)
+ Logs     : ...\server.log
+            ...\tunnel.log
+================================================
+```
+
+If any step fails, the script prints `RUBEVPN SERVICE DEGRADED/ERROR` with a structured error (`code`, message, timestamp, context, recovery action) and the last lines of the relevant log, then exits non-zero.
 
 ### `stop.bat`
 
-Stops the server and the specific Pinggy tunnel (via its tunnel ID), without killing Pinggy's shared daemon.
+Stops the server and the specific Pinggy tunnel (via its full alphanumeric tunnel ID), without killing Pinggy's shared daemon.
+
+### Performance and error-handling fixes
+
+- Per-connection chatter in the vendored gVisor netstack is gated behind `RUBEVPN_WG_VERBOSE=1` (off by default).
+- UDP relays bind an ephemeral local port instead of the client's source port, removing bind collisions.
+- TCP relays use a real idle-timeout read loop (refreshed on activity) with a 5-minute idle limit, and both TCP/UDP relays are bounded to 512 concurrent flows.
+- Tunnel startup fails fast if the process exits or the Pinggy daemon stops, instead of waiting the full timeout.
+- Errors from the launcher use the same structured model as the backend: `PORT_CONFLICT`, `TUNNEL_FAILED`, `TUNNEL_TIMEOUT`, `SERVER_START_FAILED`, `VERIFY_FAILED`, `VERIFY_TIMEOUT`, `KEY_GENERATION_FAILED`, `MISSING_DEPENDENCY`, `CFG_INVALID`.
 
 ### Current limitations
 
@@ -350,3 +378,5 @@ Workflows:
 | `RUBEVPN_SETTINGS_PATH` | Optional settings file override |
 | `RUBEVPN_WG_DIR` | Optional config directory for the experimental stack |
 | `RUBEVPN_NO_QR` | Set `1` to suppress auto-opening the QR |
+| `RUBEVPN_WG_VERBOSE` | Set `1` to restore verbose per-connection gVisor logs |
+| `RUBEVPN_SKIP_VERIFY` | Set `1` to skip the handshake gate (status becomes DEGRADED) |

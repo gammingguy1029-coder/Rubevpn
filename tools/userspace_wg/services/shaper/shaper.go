@@ -7,7 +7,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-
 type Reader struct {
 	r       io.Reader
 	limiter *rate.Limiter
@@ -17,9 +16,9 @@ type Reader struct {
 // NewReader returns a reader that implements io.Reader with rate limiting.
 func NewReader(r io.Reader, limiter *rate.Limiter) *Reader {
 	return &Reader{
-		r:   r,
+		r:       r,
 		limiter: limiter,
-		ctx: context.Background(),
+		ctx:     context.Background(),
 	}
 }
 

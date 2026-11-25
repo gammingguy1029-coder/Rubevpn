@@ -7,7 +7,6 @@ package netstack
 
 import (
 	"fmt"
-	"log"
 	"net/netip"
 	"os"
 	"time"
@@ -131,7 +130,7 @@ func (tun *NetTun) Events() chan tun.Event {
 }
 
 func (tun *NetTun) Read(buf []byte, offset int) (int, error) {
-	// log.Println("tun> Read")
+	// debugf("tun> Read")
 
 	view, ok := <-tun.incomingPacket
 	if !ok {
@@ -144,7 +143,7 @@ func (tun *NetTun) Read(buf []byte, offset int) (int, error) {
 		p = append(p, buf[offset:offset+n]...)
 		err := tun.w.WritePacket(gopacket.CaptureInfo{Timestamp: time.Now(), CaptureLength: len(p), Length: len(p)}, p)
 		if err != nil {
-			log.Println("tun> Write", err)
+			debugf("tun> Write", err)
 		}
 	}
 
@@ -152,7 +151,7 @@ func (tun *NetTun) Read(buf []byte, offset int) (int, error) {
 }
 
 func (tun *NetTun) Write(buf []byte, offset int) (int, error) {
-	// log.Println("tun> Write")
+	// debugf("tun> Write")
 
 	packet := buf[offset:]
 	if len(packet) == 0 {
@@ -162,10 +161,10 @@ func (tun *NetTun) Write(buf []byte, offset int) (int, error) {
 	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Data: buffer.NewVectorisedView(len(packet), []buffer.View{buffer.NewViewFromBytes(packet)})})
 	switch packet[0] >> 4 {
 	case 4:
-		// log.Println("tun>>> DeliverNetworkPacket 4>")
+		// debugf("tun>>> DeliverNetworkPacket 4>")
 		tun.dispatcher.DeliverNetworkPacket(ipv4.ProtocolNumber, pkb)
 	case 6:
-		// log.Println("tun>>> DeliverNetworkPacket 6>")
+		// debugf("tun>>> DeliverNetworkPacket 6>")
 		tun.dispatcher.DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
 	}
 	pkb.DecRef()
@@ -178,7 +177,7 @@ func (tun *NetTun) Flush() error {
 }
 
 func (tun *NetTun) Close() error {
-	log.Println("tun > Close")
+	debugf("tun > Close")
 
 	if !tun.closed {
 		if tun.events != nil {

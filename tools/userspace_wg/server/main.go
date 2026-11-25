@@ -54,6 +54,11 @@ func main() {
 		"listen_port=%d\nprivate_key=%s\npublic_key=%s\nallowed_ip=10.0.0.2/32\n",
 		port, privateKey, peerKey,
 	)
+	// Optional second peer used by start.bat's encrypted health check. It has
+	// a different identity and address so it never disturbs the phone session.
+	if verify := os.Getenv("RUBEVPN_WG_VERIFY_PUBLIC_KEY"); verify != "" {
+		settings += fmt.Sprintf("public_key=%s\nallowed_ip=10.0.0.3/32\n", requireKey("RUBEVPN_WG_VERIFY_PUBLIC_KEY", verify))
+	}
 	if err := dev.IpcSet(settings); err != nil {
 		log.Fatal(err)
 	}

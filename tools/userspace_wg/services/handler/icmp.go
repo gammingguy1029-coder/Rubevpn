@@ -74,7 +74,7 @@ func newPinger(s *stack.Stack) *Pinger {
 
 // send to external network
 func (p *Pinger) Ping(msg *icmp.Echo, dst, src tcpip.Address) {
-	log.Println("Ping >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>", dst)
+	debugf("Ping >>> %v", dst)
 
 	wm := icmp.Message{
 		Type: ipv4_.ICMPTypeEcho,
@@ -112,7 +112,7 @@ func (p *Pinger) clearOldEntriesJob() {
 		p.mu.Lock()
 		for k, v := range p.entries {
 			if tnow.After(v.timeout) {
-				// log.Println("clearOldEntriesJob>", k)
+				// debugf("clearOldEntriesJob>", k)
 				delete(p.entries, k)
 			}
 		}
@@ -138,13 +138,13 @@ func (p *Pinger) ProcessIncomingICMP() {
 
 		switch rm.Type {
 		case ipv4_.ICMPTypeEchoReply:
-			log.Printf("got reflection from %v. %v > ", peer)
+			debugf("got reflection from %v > ", peer)
 
 			msg := rm.Body.(*icmp.Echo)
 			ip := net.ParseIP(peer.String())
 			reqID := getRequestID(msg, tcpip.Address(ip.To4()))
 
-			// log.Printf("> %v %v", peer, reqID)
+			// debugf("> %v %v", peer, reqID)
 			p.mu.Lock()
 			ent, ok := p.entries[reqID]
 			if ok {
@@ -153,14 +153,14 @@ func (p *Pinger) ProcessIncomingICMP() {
 			p.mu.Unlock()
 
 			if ok {
-				log.Println("Reply >", ent, reqID)
+				debugf("Reply > %v %v", ent, reqID)
 
 				view := wrapMsgIntoIPv4Packet(ent.dst, ent.src, rb[:n])
 				p.s.WritePacketToRemote(1, "", ipv4.ProtocolNumber, view)
 			}
 
 		default:
-			log.Printf("got %+v; want echo reply", rm)
+			debugf("got %+v; want echo reply", rm)
 		}
 	}
 }
@@ -193,14 +193,14 @@ func ICMPHandler(s *stack.Stack) func(id stack.TransportEndpointID, pkt *stack.P
 		case *icmp.Echo:
 			if pinger.limiter.Allow() {
 				msg := rmsg.Body.(*icmp.Echo)
-				log.Println("icmp echo > forward", msg.ID, msg.Seq)
+				debugf("icmp echo > forward %v %v", msg.ID, msg.Seq)
 				pinger.Ping(msg, id.LocalAddress, id.RemoteAddress)
 			} else {
-				log.Println("icmp echo > rate limit exceeded, dropping")
+				debugf("icmp echo > rate limit exceeded, dropping")
 			}
 
 		default:
-			log.Printf("received %+v from %v; wanted echo", rmsg, id.RemoteAddress)
+			debugf("received %+v from %v; wanted echo", rmsg, id.RemoteAddress)
 			return false
 		}
 		return true
