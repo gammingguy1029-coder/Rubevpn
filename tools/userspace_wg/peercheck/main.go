@@ -95,7 +95,7 @@ func main() {
 		fromDevice: make(chan []byte, 16),
 	}
 	m.events <- tun.EventUp
-	dev := device.NewDevice(m, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, ""))
+	dev := device.NewDevice(m, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
 	settings := fmt.Sprintf(
 		"private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n",
 		privateKey, serverKey, endpoint,

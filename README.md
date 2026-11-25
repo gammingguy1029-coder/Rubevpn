@@ -21,7 +21,7 @@ diagnostics, and a modular WireGuard provider interface.
 | Secret redaction in logs | Implemented |
 | Network diagnostics and preflight scripts | Implemented |
 | Windows WireGuard provider + setup scripts | Implemented, unit tested locally |
-| Config/API/log/Windows/startup tests | 44 passing locally |
+| Config/API/log/Windows/startup tests | 60 passing locally |
 | Experimental userspace WireGuard + UDP tunnel | Handshake verified via `peercheck` (`VERIFY_OK`) |
 | One-click `start.bat` / `stop.bat` | Implemented; verified handshake gate, clear ONLINE banner, QR auto-opens |
 | CI workflows on GitHub | Not yet verified (no remote push performed) |
@@ -184,6 +184,28 @@ To activate real monitoring, set `vpn.provider` to `wireguard` in
 host.** Handshake, IPv4 routing, DNS behaviour, and reconnection remain
 `UNVERIFIED` until tested there.
 
+## Known performance constraints and fixes
+
+- **gVisor RACK stall:** the vendored netstack disables TCP RACK recovery, which
+  upstream could stall downloads for 14–21 s after brief packet loss
+  ([MHSanaei/3x-ui#7177](https://github.com/MHSanaei/3x-ui/issues/7177), fix
+  commit `e38ad52`).
+- **MTU tuning:** `RUBEVPN_WG_MTU` accepts an integer `1200`–`1500` (default
+  `1420`) and is written to both `server.env` and the Android profile
+  (`MTU = <value>`). Invalid values fail with `CFG_INVALID`; try `1400` on
+  CGNAT/relay links.
+- **Android data path:** the official WireGuard app uses userspace
+  `wireguard-go` through `VpnService` unless the device is rooted, so it cannot
+  match native kernel throughput.
+- **Free relay:** Pinggy publishes UDP tunnels with unlimited data, but they
+  expire after ~60 minutes, change port on restart, and add a relay hop.
+- **Realistic ceiling:** sustained 40–100 Mbps requires native WireGuard on a
+  public-IP host with inbound UDP and IP forwarding/NAT.
+- **Optional measurement:** run `python scripts/start_experimental.py --speedtest`
+  to execute the bundled `speedtest.exe` after a successful handshake. It uses
+  the verification peer's credentials and prints its output; a
+  `SPEEDTEST_FAILED` error is reported but never blocks normal startup.
+
 ## Roadmap
 
 1. **M0** — Feasibility (done, documented above).
@@ -198,7 +220,8 @@ host.** Handshake, IPv4 routing, DNS behaviour, and reconnection remain
 
 | Symptom | Action |
 |---|---|
-| App fails at startup with `CFG_INVALID` | Set both security environment variables; check `config/settings.json`. |
+| App fails at startup with `CFG_INVALID` | Set both security environment variables; check `config/settings.json`. For the experimental launcher, check that `RUBEVPN_WG_MTU` is an integer from 1200 to 1500. |
+| Tunnel pages are slow or stall | Try `RUBEVPN_WG_MTU=1400` and `--speedtest`; for 40–100 Mbps use native WireGuard on a public-IP host. |
 | Dashboard shows `OFFLINE` with `PUBLIC_ENDPOINT_MISSING` | Expected on hosted runners; deploy on an authorized host. |
 | Login returns `CSRF_FAILED` | Reload the page so a fresh CSRF cookie is set. |
 | Login returns `AUTH_RATE_LIMITED` | Wait one minute before retrying. |

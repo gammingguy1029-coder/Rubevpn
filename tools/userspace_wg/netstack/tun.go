@@ -64,6 +64,14 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		// HandleLocal:              false,
 	})
 
+	// The vendored gVisor enables RACK loss detection by default. With the
+	// experimental tunnel, brief packet loss makes RACK stall TCP downloads
+	// for 14-21s; disabling recovery avoids that freeze.
+	recovery := tcpip.TCPRecovery(0)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery); err != nil {
+		return nil, nil, fmt.Errorf("disable TCP RACK: %v", err)
+	}
+
 	// High cap for the experimental tunnel; the upstream prototype limited
 	// this to 1 Mbps, which was the dominant bottleneck.
 	limiter := rate.NewLimiter(rate.Limit(200*1024*1024/8), 200*1024*1024/8)

@@ -15,7 +15,7 @@
 | Capability | State | Evidence |
 |---|---|---|
 | Repository structure, CI workflows | Implemented | Files present; workflows not yet run on GitHub |
-| Python 3.12 backend, config validation, structured logs | Implemented | `backend/app/*`, 44 passing tests |
+| Python 3.12 backend, config validation, structured logs | Implemented | `backend/app/*`, 60 passing tests |
 | Authenticated dashboard with real backend data | Implemented | API tests + live smoke test (`/`, `/health`, 401 on status) |
 | API authentication / invalid credentials rejected | Implemented | `tests/test_api.py` |
 | Secret redaction in logs | Implemented | `tests/test_logging.py` |
@@ -83,7 +83,7 @@ flowchart LR
 | `scripts/start_experimental.py` | One-click orchestration of userspace WireGuard + UDP tunnel |
 | `start.bat`, `stop.bat` | Windows launchers for the experimental stack |
 | `tools/userspace_wg/*` | Vendored userspace WireGuard server, keygen, peercheck (MIT-derived) |
-| `tests/*` | 38 tests: config, API, logging, Windows provider, setup idempotency |
+| `tests/*` | 60 tests: config, API, logging, Windows provider, setup idempotency, startup/MTU/speedtest |
 | `.github/workflows/tests.yml` | pytest job with least-privilege permissions |
 | `.github/workflows/preflight.yml` | Preflight job with scrubbed report artifact |
 | `config/settings.example.json` | Secret-free example configuration |
@@ -196,8 +196,9 @@ Because the runner has no admin rights or public endpoint, `tools/userspace_wg/`
 4. On first run: generates **server, client and verification** keypairs, writes `server.env`, starts server and tunnel.
 5. On later runs: reuses existing keys, stops only its own processes (with PID identity checks), restarts server and tunnel, refreshes the endpoint.
 6. Verifies a real encrypted handshake through the public endpoint using the **separate verification peer** (`10.0.0.3`), so the phone session is not disturbed.
-7. Writes `phone.conf` and `phone-qr.png`, installs `qrcode`/`pillow` if needed, and **opens the QR automatically**.
-8. Prints a clear status block:
+7. Writes `phone.conf` and `phone-qr.png` (including the validated `MTU` value), installs `qrcode`/`pillow` if needed, and **opens the QR automatically**.
+8. With `--speedtest`, runs the bundled `speedtest.exe` after a successful verification using the verification peer's credentials; its output is printed. This probe is optional and its failure (`SPEEDTEST_FAILED`) never blocks normal startup.
+9. Prints a clear status block:
 
 ```text
 ================================================
@@ -226,7 +227,18 @@ Stops the server and the specific Pinggy tunnel (via its full alphanumeric tunne
 - UDP relays bind an ephemeral local port instead of the client's source port, removing bind collisions.
 - TCP relays use a real idle-timeout read loop (refreshed on activity) with a 5-minute idle limit, and both TCP/UDP relays are bounded to 512 concurrent flows.
 - Tunnel startup fails fast if the process exits or the Pinggy daemon stops, instead of waiting the full timeout.
-- Errors from the launcher use the same structured model as the backend: `PORT_CONFLICT`, `TUNNEL_FAILED`, `TUNNEL_TIMEOUT`, `SERVER_START_FAILED`, `VERIFY_FAILED`, `VERIFY_TIMEOUT`, `KEY_GENERATION_FAILED`, `MISSING_DEPENDENCY`, `CFG_INVALID`.
+- Errors from the launcher use the same structured model as the backend: `PORT_CONFLICT`, `TUNNEL_FAILED`, `TUNNEL_TIMEOUT`, `SERVER_START_FAILED`, `VERIFY_FAILED`, `VERIFY_TIMEOUT`, `KEY_GENERATION_FAILED`, `MISSING_DEPENDENCY`, `CFG_INVALID`, `SPEEDTEST_FAILED`.
+
+### Known performance constraints and fixes
+
+Research behind the current tuning:
+
+- **gVisor TCP RACK stall:** the upstream gVisor netstack enables RACK loss recovery by default; brief packet loss over a relay could freeze TCP downloads for 14–21 s (reported in [MHSanaei/3x-ui#7177](https://github.com/MHSanaei/3x-ui/issues/7177), fixed upstream by commit `e38ad52`). Our vendored netstack now disables TCP RACK recovery, removing that stall.
+- **MTU tuning:** `RUBEVPN_WG_MTU` controls the WireGuard interface MTU (integer `1200`–`1500`, default `1420`; invalid values fail with `CFG_INVALID`). It is written to `server.env` and to the Android profile as `MTU = <value>`. Try `1400` on CGNAT/relay paths where fragmentation or black-holed ICMP causes slow or stalled transfers.
+- **Android data path:** the official Android WireGuard app runs userspace `wireguard-go` behind `VpnService` unless the device is rooted; it cannot use the kernel module, so throughput is lower than on a rooted/native host. The QR/profile sets the tuned MTU.
+- **Relay hop:** free Pinggy tunnels publish a UDP endpoint with unlimited data, but the endpoint expires after ~60 minutes, changes port on restart, and adds an extra relay hop with additional latency/overhead. Re-import the fresh QR after each restart.
+- **Realistic ceiling:** sustained 40–100 Mbps needs native WireGuard on a public-IP host with inbound UDP and IP forwarding/NAT; the experimental userspace + relay stack is not expected to reach it. Use `--speedtest` to measure an individual run without making throughput a startup gate.
+- **Measured after the fixes (10 MB Cloudflare download through the tunnel from this runner):** `25.87 Mbps` at MTU 1420 and `27.07 Mbps` at MTU 1400. Results vary with relay load and phone signal; these numbers are evidence, not a guarantee.
 
 ### Current limitations
 
@@ -245,7 +257,7 @@ Stops the server and the specific Pinggy tunnel (via its full alphanumeric tunne
 4. Verify a recent handshake in the app.
 5. Test `https://ifconfig.me` (should show the runner's public IP) and `https://www.dnsleaktest.com`.
 
-The profile uses `Address = 10.0.0.2/32`, `DNS = 10.0.0.1`, `AllowedIPs = 0.0.0.0/0`, `PersistentKeepalive = 25`. No root is required. Private keys are never emailed, uploaded, or placed in URLs.
+The profile uses `Address = 10.0.0.2/32`, `DNS = 10.0.0.1`, `MTU = <RUBEVPN_WG_MTU>` (default `1420`), `AllowedIPs = 0.0.0.0/0`, `PersistentKeepalive = 25`. No root is required; the official app uses userspace `wireguard-go`. Private keys are never emailed, uploaded, or placed in URLs.
 
 ---
 
@@ -253,7 +265,7 @@ The profile uses `Address = 10.0.0.2/32`, `DNS = 10.0.0.1`, `AllowedIPs = 0.0.0.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | 38 passed |
+| `python -m pytest -q` | 60 passed, 1 warning |
 | Live uvicorn smoke test | `/health` 200, dashboard 200, static assets 200, status 401 unauthenticated |
 | `preflight.py --json --save` | Honest blockers: `NO_PRIVILEGE`, `PUBLIC_ENDPOINT_MISSING` |
 | `diagnostics.py --json` | STUN mapping: bound 51820 → external ephemeral port; inbound `UNVERIFIED` |
@@ -345,7 +357,7 @@ Workflows:
 | Connected clients shows "Unavailable (no real data)" | Intentional when no provider data exists |
 | `start.bat` says Node missing | Install Node.js/npm and rerun |
 | Tunnel expires after ~60 minutes | Free Pinggy limit; rerun `start.bat` and re-import QR, or use Pinggy Pro |
-| Slow web pages | gVisor userspace forwarding + relay; use native WireGuard on a public host |
+| Slow web pages | Try `RUBEVPN_WG_MTU=1400` and `--speedtest`; gVisor userspace forwarding + the relay remain the ceiling, so use native WireGuard on a public host for 40–100 Mbps |
 
 ---
 
@@ -377,6 +389,7 @@ Workflows:
 | `RUBEVPN_COOKIE_SECURE` | Set `true` behind HTTPS |
 | `RUBEVPN_SETTINGS_PATH` | Optional settings file override |
 | `RUBEVPN_WG_DIR` | Optional config directory for the experimental stack |
+| `RUBEVPN_WG_MTU` | WireGuard MTU, integer 1200–1500 (default 1420; try 1400 on CGNAT/relay) |
 | `RUBEVPN_NO_QR` | Set `1` to suppress auto-opening the QR |
 | `RUBEVPN_WG_VERBOSE` | Set `1` to restore verbose per-connection gVisor logs |
 | `RUBEVPN_SKIP_VERIFY` | Set `1` to skip the handshake gate (status becomes DEGRADED) |

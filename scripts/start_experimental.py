@@ -32,6 +32,9 @@ STATE = CFG / "state.json"
 ENDPOINT_RE = re.compile(r"udp://([A-Za-z0-9.\-]+):(\d+)")
 TUNNEL_ID_RE = re.compile(r"Tunnel\s+([A-Za-z0-9]+)")
 LISTEN_PORT = int(os.getenv("RUBEVPN_WG_LISTEN_PORT", "51820"))
+DEFAULT_MTU = "1420"
+MTU_MIN = 1200
+MTU_MAX = 1500
 DETACHED = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
@@ -206,12 +209,34 @@ def ensure_keys(keygen: Path) -> tuple[dict[str, str], dict[str, str], dict[str,
     return keys["server"], keys["client"], keys["verify"]
 
 
-def write_server_env(server: dict[str, str], client: dict[str, str], verify: dict[str, str]) -> None:
+def read_mtu() -> int:
+    """Read and validate the WireGuard MTU from the environment."""
+    raw = os.getenv("RUBEVPN_WG_MTU", DEFAULT_MTU)
+    recovery = (
+        f"Set RUBEVPN_WG_MTU to an integer from {MTU_MIN} to {MTU_MAX} "
+        "(default 1420; try 1400 on CGNAT/relay links) and retry."
+    )
+    try:
+        mtu = int(raw)
+    except (TypeError, ValueError):
+        fail("CFG_INVALID", f"RUBEVPN_WG_MTU must be an integer (got {raw!r}).",
+             recovery, {"RUBEVPN_WG_MTU": raw})
+    if not MTU_MIN <= mtu <= MTU_MAX:
+        fail("CFG_INVALID",
+             f"RUBEVPN_WG_MTU={raw} is outside the supported range {MTU_MIN}..{MTU_MAX}.",
+             recovery, {"RUBEVPN_WG_MTU": raw, "allowed_range": f"{MTU_MIN}..{MTU_MAX}"})
+    return mtu
+
+
+def write_server_env(server: dict[str, str], client: dict[str, str], verify: dict[str, str],
+                     mtu: int | None = None) -> None:
+    resolved_mtu = read_mtu() if mtu is None else mtu
     lines = [
         f"RUBEVPN_WG_PRIVATE_KEY={server['private_key']}",
         f"RUBEVPN_WG_PEER_PUBLIC_KEY={client['public_key']}",
         f"RUBEVPN_WG_VERIFY_PUBLIC_KEY={verify['public_key']}",
         f"RUBEVPN_WG_LISTEN_PORT={LISTEN_PORT}",
+        f"RUBEVPN_WG_MTU={resolved_mtu}",
     ]
     (CFG / "server.env").write_text("\n".join(lines) + "\n", encoding="ascii")
 
@@ -286,12 +311,44 @@ def verify_handshake(server: dict[str, str], verify: dict[str, str], endpoint: s
     return int(match.group(1))
 
 
-def write_android_profile(server: dict[str, str], client: dict[str, str], endpoint: str) -> str:
+def run_speedtest(server: dict[str, str], verify: dict[str, str], endpoint: str) -> str:
+    """Optional bundled throughput probe; failures never gate normal startup."""
+    speedtest = ensure_binary("speedtest.exe")
+    env = os.environ.copy()
+    env.update({
+        "RUBEVPN_WG_PRIVATE_KEY": verify["private_key"],
+        "RUBEVPN_WG_SERVER_PUBLIC_KEY": server["public_key"],
+        "RUBEVPN_WG_LOCAL_ADDRESS": "10.0.0.3",
+        "RUBEVPN_TEST_ENDPOINT": endpoint,
+    })
+    try:
+        result = subprocess.run([str(speedtest)], env=env, capture_output=True,
+                                text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        fail("SPEEDTEST_FAILED", "The bundled speed test timed out after 120 seconds.",
+             "Retry with --speedtest, or ignore it: throughput testing is optional and not "
+             "required for the VPN to start.", {"endpoint": endpoint, "timeout_seconds": 120})
+    output = (result.stdout or "") + (result.stderr or "")
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n")
+    if result.returncode != 0:
+        fail("SPEEDTEST_FAILED", "The bundled speed test exited with a non-zero status.",
+             "Retry with --speedtest after checking the endpoint and MTU; this probe is "
+             "optional and does not affect startup.",
+             {"endpoint": endpoint, "exit_code": result.returncode,
+              "output": output.strip()[:200]})
+    return output
+
+
+def write_android_profile(server: dict[str, str], client: dict[str, str], endpoint: str,
+                          mtu: int | None = None) -> str:
+    resolved_mtu = read_mtu() if mtu is None else mtu
     content = "\n".join([
         "[Interface]",
         f"PrivateKey = {client['private_key']}",
         "Address = 10.0.0.2/32",
         "DNS = 10.0.0.1",
+        f"MTU = {resolved_mtu}",
         "",
         "[Peer]",
         f"PublicKey = {server['public_key']}",
@@ -356,6 +413,8 @@ def print_online(endpoint: str, server_pid: int, tunnel_pid: int, reply_bytes: i
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start RubeVPN's experimental tunnel stack")
     parser.add_argument("--stop", action="store_true", help="stop the running server and tunnel")
+    parser.add_argument("--speedtest", action="store_true",
+                        help="run the bundled optional throughput test after verification")
     args = parser.parse_args()
 
     CFG.mkdir(parents=True, exist_ok=True)
@@ -382,14 +441,17 @@ def main() -> int:
         fail("MISSING_DEPENDENCY", "Node.js/npm was not found.",
              "Install Node.js from https://nodejs.org/ and retry.")
 
+    mtu = read_mtu()
+    print(f"[OK] WireGuard MTU: {mtu}")
     configured = all((CFG / f"{name}_keys.json").exists() for name in ("server", "client", "verify"))
     print(f"[OK] Config directory: {CFG}")
     print("[OK] Reusing existing keys." if configured else "[OK] First run: generating keys.")
 
     server_exe = ensure_binary("server.exe")
     keygen = ensure_binary("keygen.exe")
+    ensure_binary("speedtest.exe")  # sync the optional probe for new devices
     server_keys, client_keys, verify_keys = ensure_keys(keygen)
-    write_server_env(server_keys, client_keys, verify_keys)
+    write_server_env(server_keys, client_keys, verify_keys, mtu)
 
     server_pid = start_server(server_exe)
     time.sleep(0.7)
@@ -409,8 +471,10 @@ def main() -> int:
     else:
         reply_bytes = verify_handshake(server_keys, verify_keys, endpoint)
         print(f"[OK] Encrypted handshake verified (reply_bytes={reply_bytes})")
+        if args.speedtest:
+            run_speedtest(server_keys, verify_keys, endpoint)
 
-    write_android_profile(server_keys, client_keys, endpoint)
+    write_android_profile(server_keys, client_keys, endpoint, mtu)
     qr = CFG / "phone-qr.png"
     if qr.exists() and os.name == "nt" and os.getenv("RUBEVPN_NO_QR") != "1":
         try:
