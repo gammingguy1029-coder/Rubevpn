@@ -83,6 +83,20 @@ button:hover { filter: brightness(1.1); }
 
 .card p { margin: 0; font-size: 1.1rem; font-weight: 600; word-break: break-word; }
 
+.actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.inline-form { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.inline-form input {
+  flex: 1 1 220px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text);
+}
+.device-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.device-row .grow { flex: 1 1 240px; }
+.device-row button { padding: 4px 10px; font-size: 0.8rem; }
+
 .status { text-transform: uppercase; }
 .status.online { color: var(--ok); }
 .status.degraded { color: var(--warn); }

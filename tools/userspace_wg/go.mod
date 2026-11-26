@@ -32,4 +32,5 @@ require (
 //replace golang.zx2c4.com/wireguard => ../../wireguard-go/
 // replace gvisor.dev/gvisor => C:\Users\user\go\pkg\mod\gvisor.dev\gvisor@v0.0.0-20211020211948-f76a604701b6\
 // replace gvisor.dev/gvisor => github.com/sagernet/gvisor v0.0.0-20220109124627-f8f67dadd776
-replace gvisor.dev/gvisor => github.com/mysteriumnetwork/gvisor v0.0.0-20220615150015-d552b202473c
+// Vendored locally so the old build tag issue does not require Go < 1.20.
+replace gvisor.dev/gvisor => ./third_party/gvisor

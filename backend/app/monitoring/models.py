@@ -69,6 +69,7 @@ class MonitoringSnapshot(BaseModel):
     session_status: StatusValue
     uptime_seconds: int
     session_expires_at: datetime | None = None
+    admin_session_expires_at: datetime | None = None
     connected_clients: int | None = None
     data_available: bool = False
     last_health_check: datetime | None = None

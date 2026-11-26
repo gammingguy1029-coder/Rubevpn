@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -48,26 +50,26 @@ def test_health_is_public_and_reports_version(client: TestClient) -> None:
 def test_status_requires_authentication(client: TestClient) -> None:
     response = client.get("/api/v1/status")
     assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "AUTH_REQUIRED"
+    assert response.json()["code"] == "AUTH_REQUIRED"
 
 
 def test_wrong_password_is_rejected(client: TestClient) -> None:
     response = sign_in(client, password="definitely-wrong")
     assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "AUTH_FAILED"
+    assert response.json()["code"] == "AUTH_FAILED"
     assert client.get("/api/v1/status").status_code == 401
 
 
 def test_non_ascii_username_is_rejected_cleanly(client: TestClient) -> None:
     response = sign_in(client, username="ådmin")
     assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "AUTH_FAILED"
+    assert response.json()["code"] == "AUTH_FAILED"
 
 
 def test_csrf_token_is_required(client: TestClient) -> None:
     response = sign_in(client, with_csrf=False)
     assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "CSRF_FAILED"
+    assert response.json()["code"] == "CSRF_FAILED"
 
 
 def test_authenticated_status_contains_only_real_data(client: TestClient) -> None:
@@ -81,6 +83,10 @@ def test_authenticated_status_contains_only_real_data(client: TestClient) -> Non
     assert body["connected_clients"] is None
     assert body["data_available"] is False
     assert body["session_expires_at"] is None
+    admin_expiry = datetime.fromisoformat(body["admin_session_expires_at"])
+    assert admin_expiry > datetime.now(timezone.utc)
+    assert admin_expiry < datetime.now(timezone.utc) + timedelta(hours=2)
+    assert "No VPN session" in body["notes"]
     assert body["last_health_check"]
     codes = {error["code"] for error in body["errors"]}
     assert {"PUBLIC_ENDPOINT_MISSING", "UDP_UNREACHABLE", "NO_PRIVILEGE"} <= codes
@@ -137,11 +143,78 @@ def test_wireguard_provider_selection_never_invents_status(tmp_path: Path, monke
         assert "WIREGUARD_SERVICE_FAILURE" in codes
 
 
+def test_snapshot_notes_follow_real_provider_state() -> None:
+    from backend.app.config import load_settings
+    from backend.app.monitoring.events import EventBuffer
+    from backend.app.monitoring.health import build_snapshot
+    from backend.app.monitoring.models import HealthReport, StatusValue
+
+    class FakeProvider:
+        def __init__(self, value: StatusValue) -> None:
+            self.value = value
+
+        def diagnostics(self):
+            return []
+
+        def health_check(self):
+            return HealthReport(status=self.value, checked_at=datetime.now(timezone.utc), details="")
+
+        def connected_clients(self):
+            return 1
+
+        def data_available(self):
+            return True
+
+    settings = load_settings(ROOT / "config" / "settings.example.json")
+    online = build_snapshot(settings, FakeProvider(StatusValue.ONLINE),
+                            EventBuffer(), time.monotonic())
+    assert "handshake observed" in online.notes
+    degraded = build_snapshot(settings, FakeProvider(StatusValue.DEGRADED),
+                              EventBuffer(), time.monotonic())
+    assert "no peer completed" in degraded.notes
+    offline = build_snapshot(settings, FakeProvider(StatusValue.OFFLINE),
+                             EventBuffer(), time.monotonic())
+    assert "No VPN session" in offline.notes
+
+
+def test_error_envelope_is_consistent_and_correlated(client: TestClient) -> None:
+    response = client.get("/api/v1/status", headers={"X-Request-ID": "correlation-123"})
+    body = response.json()
+    assert response.status_code == 401
+    assert set(body) == {"code", "message", "timestamp", "context",
+                         "recovery_action", "request_id"}
+    assert body["code"] == "AUTH_REQUIRED"
+    assert body["request_id"] == "correlation-123"
+    assert response.headers["X-Request-ID"] == "correlation-123"
+
+    client.get("/")
+    csrf = client.cookies.get("rubevpn_csrf")
+    failed = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "wrong"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert set(failed.json()) == set(body)
+
+    assert sign_in(client).status_code == 200
+    events = client.get("/api/v1/events").json()["events"]
+    logged = [event for event in events if event.get("event") == "AUTH_FAILED"]
+    assert logged and any(event.get("request_id") for event in logged)
+
+
+def test_generated_request_id_is_returned(client: TestClient) -> None:
+    response = client.get("/health")
+    assert response.headers["X-Request-ID"]
+    assert len(response.headers["X-Request-ID"]) >= 16
+
+
 def test_dashboard_html_loads(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
     html = response.text
-    for fragment in ("vpn-status", "session-status", "app-version", "events", "diagnostics"):
+    for fragment in ("vpn-status", "session-status", "app-version", "events", "diagnostics",
+                     "connection-status", "connect-btn", "disconnect-btn", "devices",
+                     "device-form"):
         assert fragment in html
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/static/style.css").status_code == 200

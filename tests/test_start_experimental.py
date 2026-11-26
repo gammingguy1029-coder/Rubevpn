@@ -1,6 +1,7 @@
 """Tests for the one-click startup helpers and error reporting."""
 from __future__ import annotations
 
+import json
 import socket
 import sys
 from pathlib import Path
@@ -69,6 +70,7 @@ def test_ensure_binary_refreshes_outdated_copy(tmp_path: Path, monkeypatch) -> N
     stale.write_bytes(b"old-binary")
     monkeypatch.setattr(starter, "TOOLS", tools)
     monkeypatch.setattr(starter, "CFG", cfg)
+    monkeypatch.setenv("RUBEVPN_SKIP_BINARY_VERIFY", "1")  # fixture bytes are not the pinned binary
     result = starter.ensure_binary("server.exe")
     assert result.read_bytes() == b"new-binary"
     assert starter.ensure_binary("server.exe").read_bytes() == b"new-binary"
@@ -148,6 +150,7 @@ def test_ensure_binary_syncs_speedtest(tmp_path: Path, monkeypatch) -> None:
     stale.write_bytes(b"old-probe")
     monkeypatch.setattr(starter, "TOOLS", tools)
     monkeypatch.setattr(starter, "CFG", cfg)
+    monkeypatch.setenv("RUBEVPN_SKIP_BINARY_VERIFY", "1")  # fixture bytes are not the pinned binary
     result = starter.ensure_binary("speedtest.exe")
     assert result.read_bytes() == b"new-probe"
     assert starter.ensure_binary("speedtest.exe").read_bytes() == b"new-probe"
@@ -161,6 +164,7 @@ def test_run_speedtest_uses_verification_env(tmp_path: Path, monkeypatch, capsys
     (tools / "speedtest.exe").write_bytes(b"probe")
     monkeypatch.setattr(starter, "TOOLS", tools)
     monkeypatch.setattr(starter, "CFG", cfg)
+    monkeypatch.setenv("RUBEVPN_SKIP_BINARY_VERIFY", "1")  # fixture bytes are not the pinned binary
     captured: dict[str, object] = {}
 
     def fake_run(args, **kwargs):
@@ -188,6 +192,7 @@ def test_run_speedtest_failure_is_structured(tmp_path: Path, monkeypatch, capsys
     (tools / "speedtest.exe").write_bytes(b"probe")
     monkeypatch.setattr(starter, "TOOLS", tools)
     monkeypatch.setattr(starter, "CFG", cfg)
+    monkeypatch.setenv("RUBEVPN_SKIP_BINARY_VERIFY", "1")  # fixture bytes are not the pinned binary
 
     def fake_run(args, **kwargs):
         return SimpleNamespace(returncode=1, stdout="partial", stderr="probe error")
@@ -201,3 +206,208 @@ def test_run_speedtest_failure_is_structured(tmp_path: Path, monkeypatch, capsys
     assert "[ERROR] SPEEDTEST_FAILED" in rendered
     assert "recovery:" in rendered
     assert "optional" in rendered
+
+
+def test_safe_stop_pid_refuses_recycled_pid(monkeypatch) -> None:
+    killed: list[list[str]] = []
+    monkeypatch.setattr(starter, "process_alive", lambda pid: True)
+    monkeypatch.setattr(starter, "_process_creation_ticks", lambda pid: 999)
+    monkeypatch.setattr(starter.subprocess, "run",
+                        lambda args, **kwargs: killed.append(list(args)))
+
+    starter.safe_stop_pid(4242, ("server.exe",), 111)
+    assert killed == [], "a recycled PID must never be killed"
+
+    starter.safe_stop_pid(4242, ("server.exe",), 999)
+    assert len(killed) == 1
+    assert "4242" in killed[0]
+
+
+def test_write_state_records_process_identity(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "STATE", tmp_path / "state.json")
+    starter.write_state(11, 22, "1.2.3.4:51820", "abc", 111, 222)
+    data = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert data["processes"][0]["created_ticks"] == 111
+    assert data["processes"][1]["created_ticks"] == 222
+    assert data["endpoint"] == "1.2.3.4:51820"
+
+
+@pytest.mark.parametrize("env", [
+    {"CI": "true"}, {"GITHUB_ACTIONS": "true"}, {"RUBEVPN_NO_QR": "1"},
+])
+def test_qr_opening_is_suppressed_on_headless_runners(monkeypatch, env) -> None:
+    for name in ("CI", "GITHUB_ACTIONS", "RUBEVPN_NO_QR"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert starter._qr_opening_enabled() is False
+
+
+def test_qr_opening_enabled_on_interactive_host(monkeypatch) -> None:
+    for name in ("CI", "GITHUB_ACTIONS", "RUBEVPN_NO_QR"):
+        monkeypatch.delenv(name, raising=False)
+    assert starter._qr_opening_enabled() is True
+
+
+def test_pinggy_client_version_is_pinned() -> None:
+    assert starter.PINGGY_PACKAGE.startswith("pinggy@")
+    assert starter.PINGGY_PACKAGE.split("@", 1)[1]
+
+
+def test_show_status_reports_recycled_pid_without_spawning(tmp_path: Path, monkeypatch,
+                                                           capsys) -> None:
+    monkeypatch.setattr(starter, "STATE", tmp_path / "state.json")
+    (tmp_path / "state.json").write_text(json.dumps({
+        "endpoint": "udp://1.2.3.4:51820",
+        "processes": [{"pid": 5, "name": "server.exe", "created_ticks": 1}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(starter, "process_alive", lambda pid: True)
+    monkeypatch.setattr(starter, "_process_creation_ticks", lambda pid: 2)
+
+    starter.show_status()
+    output = capsys.readouterr().out
+    assert "PID RECYCLED" in output
+    assert "udp://1.2.3.4:51820" in output
+
+
+def test_default_device_migration_creates_one_device(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "CFG", tmp_path)
+    keys = {"private_key": "A" * 44, "public_key": "B" * 44}
+    record = starter.ensure_default_device(keys)
+    assert record["id"] == "phone"
+    assert record["ip"] == "10.0.0.2"
+    assert len(starter.list_devices()) == 1
+    assert starter.ensure_default_device(keys)["id"] == "phone"
+    assert len(starter.list_devices()) == 1
+
+
+def test_add_device_assigns_unique_ips_and_revocation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "CFG", tmp_path)
+    monkeypatch.setattr(starter, "ensure_binary", lambda name: Path("keygen.exe"))
+    counter = {"n": 0}
+
+    def fake_run(_args, **_kwargs):
+        counter["n"] += 1
+        key = chr(ord("A") + counter["n"]) * 44
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            {"private_key": key, "public_key": key}), stderr="")
+
+    monkeypatch.setattr(starter, "_run", fake_run)
+    first = starter.add_device("Laptop")
+    second = starter.add_device("Tablet")
+    assert first["id"] == "laptop"
+    assert second["id"] == "tablet"
+    assert first["ip"] == "10.0.0.2"
+    assert second["ip"] == "10.0.0.4"  # 10.0.0.3 is reserved for verification
+    assert len(starter.list_devices()) == 2
+
+    assert starter.remove_device("laptop") is True
+    assert len(starter.list_devices()) == 1
+    assert starter.remove_device("../laptop") is False
+
+
+def test_write_server_env_includes_all_device_peers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "CFG", tmp_path)
+    devices = [
+        {"public_key": "B" * 44, "ip": "10.0.0.2"},
+        {"public_key": "C" * 44, "ip": "10.0.0.4"},
+    ]
+    starter.write_server_env(
+        {"private_key": "A" * 44}, {"public_key": "B" * 44},
+        {"public_key": "D" * 44}, 1420, devices,
+    )
+    content = (tmp_path / "server.env").read_text(encoding="ascii")
+    assert "RUBEVPN_WG_PEERS_JSON=" in content
+    assert '"allowed_ip":"10.0.0.2/32"' in content
+    assert '"allowed_ip":"10.0.0.4/32"' in content
+    assert f"RUBEVPN_WG_STATUS_FILE={tmp_path / starter.STATUS_FILE_NAME}" in content
+
+
+def test_write_device_profile_uses_device_key_and_address(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "CFG", tmp_path)
+    monkeypatch.setattr(starter, "_write_qr", lambda content, path: None)
+    device = {"id": "laptop", "private_key": "E" * 44, "ip": "10.0.0.4",
+              "public_key": "F" * 44}
+    content = starter.write_device_profile(
+        device, {"public_key": "B" * 44}, "1.2.3.4:51820", 1400)
+    profile = (tmp_path / "devices" / "laptop.conf").read_text(encoding="ascii")
+    assert profile == content
+    assert f"PrivateKey = {'E' * 44}" in profile
+    assert "Address = 10.0.0.4/32" in profile
+    assert "MTU = 1400" in profile
+
+
+def test_read_server_status_is_honest_when_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "CFG", tmp_path)
+    assert starter.read_server_status() == {"updated_at": None, "peers": []}
+
+
+def test_start_tunnel_delegates_to_selected_provider(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "CFG", tmp_path)
+    seen = {}
+
+    def fake_start(cfg, port, package):
+        seen.update(cfg=cfg, port=port, package=package)
+        return 4321
+
+    fake = SimpleNamespace(
+        start=fake_start,
+        info=SimpleNamespace(name="playit", static_endpoint=True, expiry_minutes=None),
+    )
+    monkeypatch.setattr(starter, "_TUNNEL_PROVIDER", fake)
+    monkeypatch.setattr(starter, "_process_creation_ticks", lambda pid: 99)
+
+    assert starter.start_tunnel() == (4321, 99)
+    assert seen["port"] == starter.LISTEN_PORT
+    assert seen["package"] == starter.PINGGY_PACKAGE
+
+
+def test_wait_for_endpoint_delegates_and_reports_errors(monkeypatch) -> None:
+    fake = SimpleNamespace(
+        wait_for_endpoint=lambda cfg, handle, timeout, alive: "1.2.3.4:51820",
+        info=SimpleNamespace(name="playit", static_endpoint=True, expiry_minutes=None),
+    )
+    monkeypatch.setattr(starter, "_TUNNEL_PROVIDER", fake)
+    assert starter.wait_for_endpoint(9) == "1.2.3.4:51820"
+
+
+def test_write_state_records_selected_provider(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(starter, "STATE", tmp_path / "state.json")
+    fake = SimpleNamespace(
+        info=SimpleNamespace(name="playit", static_endpoint=True, expiry_minutes=None),
+    )
+    monkeypatch.setattr(starter, "_TUNNEL_PROVIDER", fake)
+    starter.write_state(11, 22, "1.2.3.4:51820")
+    data = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert data["provider"] == "playit"
+    assert data["static_endpoint"] is True
+    assert data["processes"][1]["name"] == "playitd"
+
+
+def test_show_status_reports_relay(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(starter, "STATE", tmp_path / "state.json")
+    (tmp_path / "state.json").write_text(json.dumps({
+        "endpoint": "udp://1.2.3.4:51820",
+        "provider": "playit",
+        "static_endpoint": True,
+        "processes": [],
+    }), encoding="utf-8")
+    starter.show_status()
+    output = capsys.readouterr().out
+    assert "Relay    : playit (static)" in output
+
+
+def test_ensure_binary_rejects_tampered_bundle(tmp_path: Path, monkeypatch, capsys) -> None:
+    tools = tmp_path / "tools"
+    cfg = tmp_path / "cfg"
+    tools.mkdir()
+    cfg.mkdir()
+    (tools / "server.exe").write_bytes(b"tampered")
+    monkeypatch.setattr(starter, "TOOLS", tools)
+    monkeypatch.setattr(starter, "CFG", cfg)
+    monkeypatch.delenv("RUBEVPN_SKIP_BINARY_VERIFY", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        starter.ensure_binary("server.exe")
+    assert exc.value.code == 1
+    assert "[ERROR] BINARY_INTEGRITY_FAILED" in capsys.readouterr().err

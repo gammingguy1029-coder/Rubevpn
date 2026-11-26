@@ -8,6 +8,7 @@ venv/
 
 # Secrets and local config (never commit credentials)
 config/settings.json
+config/rubevpn.local.json
 .env
 *.key
 *.pem

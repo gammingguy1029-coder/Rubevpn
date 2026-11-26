@@ -90,6 +90,72 @@ Open `http://127.0.0.1:8000/`. Use a copy of `config/settings.example.json` at
 For remote access, terminate HTTPS at a reverse proxy and set
 `RUBEVPN_COOKIE_SECURE=true`. Never expose the dashboard directly over plain HTTP.
 
+### Dashboard connection controls and multiple devices
+
+The authenticated dashboard can now start/stop the experimental tunnel stack and
+enroll multiple devices. Use the **VPN connection** panel's Connect/Disconnect
+buttons and the **Devices** panel to add or revoke device profiles. Every state
+shown comes from the Go server's `server-status.json` (real handshake data); a
+device is shown as CONNECTED only after a recent handshake. Private keys never
+leave the device registry directory or appear in API responses.
+
+Equivalent CLI commands:
+
+```
+python scripts\start_experimental.py --status       # read-only, safe on CI
+python scripts\start_experimental.py --list-devices
+python scripts\start_experimental.py --add-device "Laptop"
+python scripts\start_experimental.py --remove-device laptop
+python scripts\start_experimental.py --stop
+python scripts\start_experimental.py                 # start the stack
+```
+
+Adding or revoking a device requires a service restart to take effect. The
+bundled server accepts `RUBEVPN_WG_PEERS_JSON` (public keys / allowed IPs) and
+publishes real per-device handshake counters. Its source is in
+`tools/userspace_wg/server`; rebuild with `go build -o server.exe ./server` from
+that directory. The old gvisor fork is vendored under
+`tools/userspace_wg/third_party/gvisor` with updated build tags so it compiles on
+current Go toolchains.
+
+### Relay providers (Pinggy and playit.gg)
+
+The public UDP relay is selectable with `RUBEVPN_TUNNEL_PROVIDER`:
+
+- **`pinggy` (default)** — zero setup, works on the GitHub runner. Requires
+  Node.js/npm. The free endpoint expires after ~60 minutes and changes on each
+  restart, so re-import the QR. Force an Asia edge with
+  `RUBEVPN_TUNNEL_HOST=ap.free.pinggy.io` if desired.
+- **`playit`** — free static UDP endpoint with Asia datacenters, no 60-minute
+  expiry, and no npm dependency. One-time setup:
+  1. Create a free account at playit.gg and **Add Agent**; copy its secret key.
+  2. **Add Tunnel** → type **UDP**, local address `127.0.0.1`, local port `51820`.
+  3. Save the credentials locally (the secret is never printed or sent to the
+     dashboard):
+
+     ```
+     python scripts\setup_playit.py --secret YOUR_KEY --endpoint host:port
+     python scripts\setup_playit.py --check
+     ```
+
+  4. Start with `start-playit.bat` (or set
+     `RUBEVPN_TUNNEL_PROVIDER=playit` and run `start.bat`). The agent binary is
+     `playitd` on `PATH`, or set `RUBEVPN_PLAYIT_BIN` to its full path.
+
+The dashboard's connection panel shows the active relay and whether the
+endpoint is static or expiring. Both relays feed the same WireGuard server,
+device registry, and real handshake reporting.
+
+### Moving to a fresh GitHub RDP runner
+
+The VM's `%LOCALAPPDATA%` is temporary. Keys, device profiles and playit
+credentials are mirrored into the gitignored `config/rubevpn.local.json`, and
+`start_experimental.py` restores them automatically on first start. Copy that
+one file (and the repo) to a new runner and the same device QR keeps working —
+no env setup and no re-enrollment. Use `start.bat --provider pinggy` or
+`start.bat --provider playit` to switch; the choice is remembered in the same
+file. Never commit it.
+
 ## API
 
 | Method | Path | Auth | Purpose |
@@ -101,6 +167,12 @@ For remote access, terminate HTTPS at a reverse proxy and set
 | GET | `/api/v1/status` | admin | Monitoring snapshot (real provider data) |
 | GET | `/api/v1/events` | admin | Recent redacted structured events |
 | GET | `/api/v1/diagnostics` | admin | Diagnostic checks |
+| GET | `/api/v1/connection` | admin | Tunnel state and per-device handshakes |
+| POST | `/api/v1/connection/start` | admin + CSRF | Start the experimental tunnel stack |
+| POST | `/api/v1/connection/stop` | admin + CSRF | Stop the stack |
+| GET | `/api/v1/devices` | admin | Enrolled device metadata (no private keys) |
+| POST | `/api/v1/devices` | admin + CSRF | Enroll a device |
+| DELETE | `/api/v1/devices/{id}` | admin + CSRF | Revoke a device |
 
 Security: PBKDF2-SHA256 password hashing, HMAC-signed session tokens,
 SameSite=Strict cookies, double-submit CSRF tokens, login rate limiting, Pydantic

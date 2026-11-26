@@ -7,13 +7,10 @@ and network prerequisites. Never modifies configuration or credentials.
 from __future__ import annotations
 
 import argparse
-import ctypes
 import getpass
 import importlib.util
 import json
-import os
 import platform
-import shutil
 import socket
 import sys
 import urllib.request
@@ -27,6 +24,12 @@ sys.path.insert(0, str(ROOT))
 from backend.app.config import ConfigError, load_settings  # noqa: E402
 from backend.app.security.auth import hash_password  # noqa: E402
 from backend.app.security.redaction import redact  # noqa: E402
+from backend.app.services.host_capabilities import is_admin as _host_is_admin  # noqa: E402
+from backend.app.services.host_capabilities import wireguard_installed  # noqa: E402
+from backend.app.services.windows_wireguard import (  # noqa: E402
+    SystemCommandRunner,
+    ip_forwarding_enabled as _host_ip_forwarding_enabled,
+)
 
 REQUIRED_MODULES = ("fastapi", "uvicorn", "pydantic", "pytest", "httpx")
 
@@ -81,12 +84,12 @@ def check_config(path: Path) -> tuple[dict[str, Any], Any]:
 
 
 def check_installation() -> dict[str, Any]:
-    found = [name for name in ("wg", "wireguard") if shutil.which(name)]
+    found = wireguard_installed()
     return _check("existing_installation", "SKIP" if not found else "PASS", "OK",
-                  "WireGuard tools found: " + ", ".join(found) if found
+                  "WireGuard tools found on this host." if found
                   else "No WireGuard installation detected; nothing will be overwritten.",
                   "Leave existing installations untouched unless you intend to manage them.",
-                  {"binaries": found})
+                  {"wireguard_tools": found})
 
 
 def _port_in_use(port: int, kind: str) -> bool:
@@ -117,28 +120,11 @@ def check_ports(settings: Any) -> dict[str, Any]:
 
 
 def _is_admin() -> bool:
-    if platform.system() == "Windows":
-        try:
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
-        except Exception:
-            return False
-    return os.geteuid() == 0
+    return _host_is_admin()
 
 
 def _ip_forwarding_enabled() -> bool:
-    if platform.system() == "Windows":
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters") as key:
-                value, _ = winreg.QueryValueEx(key, "IPEnableRouter")
-                return bool(value)
-        except OSError:
-            return False
-    try:
-        return Path("/proc/sys/net/ipv4/ip_forward").read_text().strip() == "1"
-    except OSError:
-        return False
+    return _host_ip_forwarding_enabled(SystemCommandRunner())
 
 
 def check_privileges() -> dict[str, Any]:

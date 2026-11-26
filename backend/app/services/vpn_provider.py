@@ -55,11 +55,17 @@ class UnavailableProvider:
         now = _now()
         checks: list[DiagnosticCheck] = []
         if not self.public_endpoint:
+            endpoint = self.settings.vpn.endpoint_host
+            detail = (
+                f"Configured endpoint {endpoint} is not bound to a local interface."
+                if endpoint
+                else "No public IPv4 endpoint is configured or bound to this host."
+            )
             checks.append(DiagnosticCheck(
                 name="public_endpoint",
                 status="FAIL",
                 code=ErrorCode.PUBLIC_ENDPOINT_MISSING,
-                message="No public IPv4 endpoint is bound to this host. The visible address is a shared outbound NAT address.",
+                message=f"{detail} A public client cannot reach the configured port.",
                 recovery_action="Deploy on an authorized host with a static public IPv4 address.",
                 checked_at=now,
             ))

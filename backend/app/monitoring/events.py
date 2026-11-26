@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
 from ..security.redaction import redact
+
+# Correlates every log event emitted while handling one HTTP request.
+REQUEST_ID: ContextVar[str | None] = ContextVar("rubevpn_request_id", default=None)
 
 _STANDARD = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()) | {
     "message",
@@ -26,6 +30,9 @@ def record_to_event(record: logging.LogRecord) -> dict[str, Any]:
     for key, value in record.__dict__.items():
         if key not in _STANDARD and not key.startswith("_"):
             event[key] = redact(value) if isinstance(value, str) else value
+    request_id = REQUEST_ID.get()
+    if request_id is not None:
+        event["request_id"] = request_id
     return event
 
 

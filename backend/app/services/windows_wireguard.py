@@ -10,6 +10,7 @@ import base64
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +20,10 @@ from ..config import AppSettings
 from ..monitoring.models import DiagnosticCheck, ErrorCode, HealthReport, StatusValue
 
 HANDSHAKE_WINDOW = timedelta(seconds=180)
+# One dashboard refresh polls several endpoints at once. Reuse a single set of
+# system observations for this long so a poll spawns one command set, not one
+# per endpoint.
+OBSERVATION_TTL_SECONDS = 1.0
 _KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 
 
@@ -35,6 +40,17 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclass
+class Observation:
+    """One coherent, time-bounded set of real WireGuard host observations."""
+
+    state: str
+    peers: list[str]
+    handshakes: dict[str, datetime]
+    ip_forwarding: bool
+    observed_at: float
 
 
 class CommandRunner(Protocol):
@@ -159,9 +175,19 @@ def parse_peers(output: str) -> list[str]:
     return [line.strip() for line in output.splitlines() if is_valid_wireguard_key(line.strip())]
 
 
+def local_tzinfo() -> timezone | None:
+    """The host's current local timezone, used to interpret wg.exe timestamps."""
+    return datetime.now().astimezone().tzinfo
+
+
 def parse_handshakes(output: str) -> dict[str, datetime]:
-    """Parse `wg show <iface> latest handshakes` output."""
+    """Parse `wg show <iface> latest handshakes` output.
+
+    `wg.exe` prints timestamps in the host's local timezone, not UTC. Attaching
+    UTC here would make recency checks off by the UTC offset on non-UTC hosts.
+    """
     handshakes: dict[str, datetime] = {}
+    local_tz = local_tzinfo()
     for line in output.splitlines():
         parts = line.split()
         if len(parts) < 3 or not is_valid_wireguard_key(parts[0]):
@@ -170,7 +196,7 @@ def parse_handshakes(output: str) -> dict[str, datetime]:
             stamp = datetime.strptime(f"{parts[1]} {parts[2]}", "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        handshakes[parts[0]] = stamp.replace(tzinfo=timezone.utc)
+        handshakes[parts[0]] = stamp.replace(tzinfo=local_tz)
     return handshakes
 
 
@@ -188,11 +214,31 @@ class WireGuardWindowsProvider:
     """Real Windows WireGuard observations; never fabricates connection state."""
 
     def __init__(self, settings: AppSettings, runner: CommandRunner | None = None,
-                 paths: WireGuardPaths | None = None) -> None:
+                 paths: WireGuardPaths | None = None,
+                 observation_ttl: float = OBSERVATION_TTL_SECONDS) -> None:
         self.settings = settings
         self.runner = runner or SystemCommandRunner()
         self.paths = paths or discover_paths()
         self.interface = settings.vpn.interface_name
+        self.observation_ttl = max(0.0, observation_ttl)
+        self._observation: Observation | None = None
+
+    def _observed(self) -> Observation:
+        """Return one cached observation, refreshing it after the TTL expires."""
+        now = time.monotonic()
+        cached = self._observation
+        if cached is not None and now - cached.observed_at < self.observation_ttl:
+            return cached
+        state, peers, handshakes = self._state()
+        observation = Observation(
+            state=state,
+            peers=peers,
+            handshakes=handshakes,
+            ip_forwarding=ip_forwarding_enabled(self.runner),
+            observed_at=now,
+        )
+        self._observation = observation
+        return observation
 
     def _show(self, field: str) -> str:
         if self.paths.wg_exe is None:
@@ -231,25 +277,25 @@ class WireGuardWindowsProvider:
         return [key for key, stamp in handshakes.items() if stamp >= threshold]
 
     def data_available(self) -> bool:
-        state, _peers, _handshakes = self._state()
-        return state == "RUNNING"
+        return self._observed().state == "RUNNING"
 
     def status(self) -> StatusValue:
-        state, peers, handshakes = self._state()
-        if state in {"NO_TOOLS", "ABSENT", "STOPPED", "UNKNOWN", "SHOW_FAILED"}:
+        observed = self._observed()
+        if observed.state in {"NO_TOOLS", "ABSENT", "STOPPED", "UNKNOWN", "SHOW_FAILED"}:
             return StatusValue.OFFLINE
-        if not peers:
+        if not observed.peers:
             return StatusValue.DEGRADED
-        return StatusValue.ONLINE if self._recent(handshakes) else StatusValue.DEGRADED
+        return StatusValue.ONLINE if self._recent(observed.handshakes) else StatusValue.DEGRADED
 
     def connected_clients(self) -> int | None:
-        state, _peers, handshakes = self._state()
-        if state != "RUNNING":
+        observed = self._observed()
+        if observed.state != "RUNNING":
             return None
-        return len(self._recent(handshakes))
+        return len(self._recent(observed.handshakes))
 
     def diagnostics(self) -> list[DiagnosticCheck]:
         now = datetime.now(timezone.utc)
+        observed = self._observed()
         checks: list[DiagnosticCheck] = []
         if not self.settings.vpn.endpoint_host:
             checks.append(DiagnosticCheck(
@@ -265,30 +311,28 @@ class WireGuardWindowsProvider:
                 recovery_action="Install WireGuard for Windows.", checked_at=now,
             ))
         else:
-            state = service_status(self.interface, self.runner)
             checks.append(DiagnosticCheck(
                 name="tunnel_service",
-                status="PASS" if state == "RUNNING" else "FAIL",
+                status="PASS" if observed.state == "RUNNING" else "FAIL",
                 code=ErrorCode.WIREGUARD_SERVICE_FAILURE,
-                message=f"Tunnel service {service_name(self.interface)} is {state}.",
+                message=f"Tunnel service {service_name(self.interface)} is {observed.state}.",
                 recovery_action="Install and start the tunnel service with scripts/setup_windows.py --apply.",
                 checked_at=now,
             ))
-        if not ip_forwarding_enabled(self.runner):
+        if not observed.ip_forwarding:
             checks.append(DiagnosticCheck(
                 name="ip_forwarding", status="FAIL", code=ErrorCode.NO_PRIVILEGE,
                 message="IPv4 forwarding is disabled or cannot be read.",
                 recovery_action="Run the elevated setup with --apply to enable forwarding and NAT.",
                 checked_at=now,
             ))
-        state, peers, handshakes = self._state()
-        if state == "RUNNING":
-            recent = self._recent(handshakes)
+        if observed.state == "RUNNING":
+            recent = self._recent(observed.handshakes)
             checks.append(DiagnosticCheck(
                 name="handshake",
                 status="PASS" if recent else "FAIL",
                 code=ErrorCode.HANDSHAKE_FAILED,
-                message=f"{len(recent)} of {len(peers)} peers completed a recent handshake.",
+                message=f"{len(recent)} of {len(observed.peers)} peers completed a recent handshake.",
                 recovery_action="Confirm the Android profile endpoint/port and inbound UDP access.",
                 checked_at=now,
             ))

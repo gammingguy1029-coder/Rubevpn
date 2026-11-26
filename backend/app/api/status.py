@@ -19,6 +19,7 @@ def status(request: Request, _claims: dict[str, Any] = Depends(require_admin)) -
         request.app.state.provider,
         request.app.state.events,
         request.app.state.started_monotonic,
+        claims=_claims,
     )
 
 

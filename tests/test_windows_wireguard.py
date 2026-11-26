@@ -59,6 +59,18 @@ def test_parse_peers_and_handshakes() -> None:
     assert parsed[KEY_ONE].year == 2026
 
 
+def test_handshakes_use_local_timezone(monkeypatch) -> None:
+    """wg.exe prints local time; stamping it UTC would skew recency checks."""
+    from backend.app.services import windows_wireguard as wg
+
+    offset = timezone(timedelta(hours=5, minutes=30))
+    monkeypatch.setattr(wg, "local_tzinfo", lambda: offset)
+    parsed = wg.parse_handshakes(f"{KEY_ONE}\t2026-11-26 12:00:00\n")
+    observed = parsed[KEY_ONE]
+    assert observed.utcoffset() == timedelta(hours=5, minutes=30)
+    assert observed.astimezone(timezone.utc).hour == 6
+
+
 def test_status_offline_without_tools(tmp_path: Path) -> None:
     provider = WireGuardWindowsProvider(SETTINGS, FakeRunner({}), make_paths(tmp_path))
     assert provider.status() == StatusValue.OFFLINE
@@ -71,7 +83,7 @@ def test_status_offline_without_tools(tmp_path: Path) -> None:
 
 def test_status_online_only_with_recent_handshake(tmp_path: Path) -> None:
     provider = WireGuardWindowsProvider(
-        SETTINGS, online_responses(datetime.now(timezone.utc)), make_paths(tmp_path)
+        SETTINGS, online_responses(datetime.now().astimezone()), make_paths(tmp_path)
     )
     assert provider.status() == StatusValue.ONLINE
     assert provider.connected_clients() == 1
@@ -82,7 +94,7 @@ def test_status_online_only_with_recent_handshake(tmp_path: Path) -> None:
 
 
 def test_stale_handshake_is_degraded(tmp_path: Path) -> None:
-    old = datetime.now(timezone.utc) - timedelta(days=2)
+    old = datetime.now().astimezone() - timedelta(days=2)
     provider = WireGuardWindowsProvider(SETTINGS, online_responses(old), make_paths(tmp_path))
     assert provider.status() == StatusValue.DEGRADED
     assert provider.connected_clients() == 0
